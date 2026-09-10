@@ -1,0 +1,4 @@
+*.pyc
+*.plist
+*.log
+*.db
