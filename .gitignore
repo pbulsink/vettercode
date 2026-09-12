@@ -1,4 +1,21 @@
+# Python
+__pycache__/
 *.pyc
-*.plist
-*.log
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Secrets & local state
+.env
 *.db
+*.log
+*.err
+
+# Test/coverage
+.pytest_cache/
+.coverage
+coverage.xml
+
+# macOS
+.DS_Store
