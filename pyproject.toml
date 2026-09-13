@@ -11,6 +11,10 @@ dependencies = [
     "requests>=2.31",
     "PyYAML>=6.0",
     "mini-swe-agent>=2.0",
+    # litellm 1.98+ imports `NotRequired` from `typing` (3.11+); pin below to keep
+    # Python 3.10 working. Bump once a stable release includes the fix (see
+    # https://github.com/BerriAI/litellm/issues/38892).
+    "litellm<1.98",
 ]
 
 [project.optional-dependencies]
