@@ -8,6 +8,20 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_real_gh(monkeypatch):
+    """Keep the suite fully offline.
+
+    `runner.run_once` falls back to the real `get_token()` (which shells out to
+    `gh auth status`) when no token is injected. `gh` is authenticated on a
+    developer laptop but not on CI runners, so fake it globally to keep the
+    test suite environment-independent (see test_runner / test_cli).
+    """
+    import vettercode.runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "get_token", lambda: "test-gh-token")
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch) -> Path:
     """Isolated VETTERCODE_HOME."""
