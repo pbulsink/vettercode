@@ -1,5 +1,8 @@
 # Vettercode
 
+[![CI](https://github.com/pbulsink/vettercode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pbulsink/vettercode/actions/workflows/ci.yml)
+[![Coverage](https://coveralls.io/repos/github/pbulsink/vettercode/badge.svg?branch=main)](https://coveralls.io/github/pbulsink/vettercode?branch=main)
+
 Local, nightly GitHub issue agent. It watches your repos for issues (or
 comments) mentioning **@vettercode**, clones each repo into a throw-away
 temp directory, runs an **LM Studio** model through
