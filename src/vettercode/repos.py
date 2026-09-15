@@ -1,44 +1,39 @@
-"""Repo list management (repos.txt) and first-run autopopulation."""
+"""Repo list resolution: always derived live from the GitHub API.
+
+No local repos.txt cache: the profile's repo list (optionally minus forks
+and/or an `exclude_repos` config list) is fetched fresh every run, so newly
+created or deleted repos are picked up automatically without manual editing.
+"""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from .github import GithubClient
 
 
-def load_repos(path: Path) -> list[str]:
-    """Read owner/name lines; ignores blanks and # comments. Order preserved."""
-    if not path.exists():
-        return []
-    repos = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            repos.append(line)
-    return repos
+def resolve_repos(
+    client: GithubClient,
+    username: str,
+    *,
+    include_forks: bool = True,
+    exclude: list[str] | None = None,
+) -> list[str]:
+    """Return the sorted, deduplicated `owner/name` repo list for `username`.
 
-
-def save_repos(path: Path, repos: list[str]) -> None:
-    """Persist sorted, deduplicated repo list with a trailing newline."""
-    unique = sorted(set(repos))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(unique) + "\n")
-
-
-def autopopulate(client: GithubClient, username: str, path: Path) -> list[str]:
-    """Return the repo list, fetching from the GitHub profile on first run.
-
-    An existing (non-empty) list is always preserved.
+    `exclude` entries are matched against the full `owner/name` string or the
+    bare repo name (case-sensitive), letting users opt specific repos out via
+    `config.yaml` without maintaining a separate file.
     """
-    existing = load_repos(path)
-    if existing:
-        return existing
-    fresh = client.list_repos(username)
-    if not fresh:
+    exclude_set = set(exclude or [])
+    fresh = client.list_repos(username, include_forks=include_forks)
+    result = [
+        repo
+        for repo in fresh
+        if repo not in exclude_set and repo.split("/", 1)[-1] not in exclude_set
+    ]
+    if not result:
         raise RuntimeError(
-            f"autopopulate found no repos for {username!r}; "
-            f"add owner/name lines to {path} manually"
+            f"no repos found for {username!r} (after applying include_forks="
+            f"{include_forks!r} and exclude_repos={sorted(exclude_set)!r}); "
+            "check the GitHub profile or config.yaml's exclude_repos list"
         )
-    save_repos(path, fresh)
-    return load_repos(path)  # sorted, deduplicated
+    return sorted(set(result))

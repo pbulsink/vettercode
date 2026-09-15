@@ -22,7 +22,7 @@ Status: **implemented & tested** (v0.1.0). All components below are in
 cli.py        argparse, exit codes, logging setup
   └─> runner.py   run_once(): window guard → repo loop → issue loop
         ├─ auth.py      gh auth check / token (single source of truth)
-        ├─ repos.py     repos.txt load/save + profile autopopulation
+        ├─ repos.py     resolve_repos(): live GitHub API list + exclude_repos filter
         ├─ github.py    GithubClient (requests, pagination, since-filter)
         ├─ filtering.py @vettercode mention (body + comments, case-insensitive)
         ├─ db.py        SQLite: repos/issues/reviews (cooldowns, last-checked)
@@ -38,8 +38,9 @@ logsetup.py   daily log files, 30-day retention
 1. **Window guard** — local time (config timezone) within `start_time`–
    `stop_time` (wraps midnight); `--ignore-window` bypasses.
 2. **Auth** — `gh` token; on failure `AuthError` → CLI prints hint, exit 2.
-3. **Repos** — `repos.txt` or first-run autopopulation from the GitHub
-   profile (forks included); `--repo` filters the list.
+3. **Repos** — `resolve_repos()` lists the profile's repos live from the
+   GitHub API every run (`include_forks`, `exclude_repos` from config
+   applied); no local cache file. `--repo` filters the resolved list.
 4. **Per repo** — `list_issues(state=open, since=last_checked)`; PRs excluded;
    per-issue:
    - mention filter (body or any comment),
@@ -83,6 +84,10 @@ logsetup.py   daily log files, 30-day retention
   `$TMPDIR/vettercode/<owner>__<name>-<ts>/` (depth 1, 600 s timeout).
 - Clean exit → deleted. Exception → copied to
   `~/.cache/vettercode/failures/<same-name>/` then deleted.
+- Removal uses a read-only-tolerant `_rmtree` (`onerror` re-chmods before
+  retrying) since git marks packed objects read-only, which otherwise makes
+  `shutil.rmtree(..., ignore_errors=True)` silently leave the clone behind
+  on Windows.
 - `sweep_stale()` removes entries older than 24 h (crashed-run leftovers).
 
 ### State (db.py)
@@ -105,7 +110,8 @@ SQLite `state.db`:
 - Fully offline: `responses` for GitHub HTTP, `FakeGithub` / `FakeAgentRun` /
   `FakeWorkdir` for runner tests, monkeypatched mini-swe-agent classes for
   agent wiring tests, real local git fixtures where clone logic matters.
-- `uv run pytest --cov` — 104 tests, ≥90% coverage.
+- `uv run pytest --cov` — coverage enforced at ≥90% (`fail_under` in
+  `pyproject.toml`); CI fails the build below that threshold.
 
 ## Known limits / future work
 
@@ -113,3 +119,15 @@ SQLite `state.db`:
   a live end-to-end `pr-draft` run against a real repo is the remaining
   integration milestone.
 - No concurrency yet (one issue at a time) — intentional for a nightly job.
+- Mode restrictions (e.g. "no writes" in observe mode) are enforced at the
+  system-prompt level only; nothing currently sandboxes or blocks the agent
+  from attempting a disallowed shell command inside its throwaway clone.
+- No Docker or other container-based execution path is provided or planned;
+  isolation relies entirely on the disposable git clone described above.
+- On Windows, `tests/test_workspace.py`'s real-`git`-subprocess tests are
+  intermittently flaky (`OSError: [WinError 6]`/`[WinError 50]` from
+  CPython's `subprocess`/`_winapi` handle duplication under load) when run
+  as part of the full suite, though they pass reliably in isolation. This
+  has not been observed on the Linux CI runners (`ci.yml` runs on
+  `ubuntu-latest`); if it reproduces on Linux too it would warrant deeper
+  investigation, but for now it's a known Windows-local dev-loop quirk.

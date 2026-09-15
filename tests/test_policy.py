@@ -16,6 +16,23 @@ def test_default_when_no_agents_md(tmp_path):
     assert load_policy(tmp_path) == DEFAULT_POLICY
 
 
+def test_default_when_agents_md_unreadable(tmp_path, monkeypatch):
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("allow_pr: false\n")
+
+    from pathlib import Path
+
+    real_read_text = Path.read_text
+
+    def boom(self, *a, **k):
+        if self == agents_md:
+            raise OSError("permission denied")
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    assert load_policy(tmp_path) == DEFAULT_POLICY
+
+
 def test_disallow_pr_via_flag(tmp_path):
     (tmp_path / "AGENTS.md").write_text("# Rules\nallow_pr: false\n")
     policy = load_policy(tmp_path)

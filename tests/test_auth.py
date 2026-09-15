@@ -57,6 +57,20 @@ def test_auth_status_reports(monkeypatch):
     assert ok and "Logged in" in message
 
 
+def test_get_token_token_command_fails(monkeypatch):
+    monkeypatch.setattr(auth.shutil, "which", lambda _: "/usr/bin/gh")
+
+    def fake_run(*a, **k):
+        args = a[0] if a else k.get("args", [])
+        if "token" in args:
+            return _completed(1, stderr="token command failed\n")
+        return _completed(0, stdout="Logged in\n")
+
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+    with pytest.raises(auth.AuthError, match="gh auth token.*failed"):
+        auth.get_token()
+
+
 def test_auth_status_gh_missing(monkeypatch):
     monkeypatch.setattr(auth.shutil, "which", lambda _: None)
     ok, message = auth.auth_status()

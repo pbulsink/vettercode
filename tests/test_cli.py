@@ -52,6 +52,26 @@ def test_out_of_window_still_zero(home, monkeypatch):
     assert main([]) == 0
 
 
+def test_config_home_flag_sets_env(tmp_path, monkeypatch):
+    custom = tmp_path / "custom-home"
+    monkeypatch.setattr(
+        "vettercode.cli.run_once", lambda *a, **k: RunResult(out_of_window=True)
+    )
+    assert main(["--config-home", str(custom), "--ignore-window"]) == 0
+    import os
+
+    assert os.environ["VETTERCODE_HOME"] == str(custom)
+
+
+def test_errors_are_logged(home, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "vettercode.cli.run_once",
+        lambda *a, **k: RunResult(errors=["something went wrong"]),
+    )
+    assert main(["--ignore-window"]) == 0
+    assert "something went wrong" in capsys.readouterr().err
+
+
 def test_full_dry_run_against_fake_api(home, monkeypatch):
     """End-to-end CLI pass with a stubbed client (no network, no agent)."""
     import vettercode.cli as cli_mod

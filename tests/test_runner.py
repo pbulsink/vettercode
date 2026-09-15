@@ -137,18 +137,48 @@ def test_dry_run_never_invokes_agent(cfg, fake_workdir, monkeypatch):
     assert result.outcomes[0].status == "dry-run"
 
 
-def test_autopopulate_seeds_repos_when_missing(cfg, home, fake_workdir):
-    assert not home.joinpath("repos.txt").exists()
+def test_repos_resolved_live_every_run(cfg, home, fake_workdir):
     fake = FakeGithub(
         repos=["me/a"],
         issues={("me", "a"): [make_issue()]},
     )
     result = run_once(cfg, now=INSIDE_WINDOW, client=fake, agent_run=FakeAgentRun())
     assert len(result.processed) == 1
-    assert home.joinpath("repos.txt").read_text() == "me/a\n"
+    assert fake.calls.count(("list_repos", "me")) == 1
 
 
-def test_only_repo_filters_repos(cfg, fake_workdir):
+def test_exclude_repos_config_filters_list(cfg, fake_workdir):
+    cfg = override(cfg, exclude_repos=["me/b"])
+    fake = FakeGithub(repos=["me/a", "me/b"], issues={("me", "a"): [make_issue()]})
+    result = run_once(cfg, now=INSIDE_WINDOW, client=fake, agent_run=FakeAgentRun())
+    assert result.repos_checked == 1
+
+
+def test_repo_list_failure_is_reported_not_fatal(cfg, fake_workdir):
+    class BoomGithub(FakeGithub):
+        def list_repos(self, username, include_forks=True):
+            from vettercode.github import GithubError
+
+            raise GithubError("rate limited", status=403)
+
+    result = run_once(cfg, now=INSIDE_WINDOW, client=BoomGithub())
+    assert result.repos_checked == 0
+    assert any("rate limited" in e for e in result.errors)
+
+
+def test_comment_fetch_failure_does_not_block_processing(cfg, fake_workdir):
+    class FlakyComments(FakeGithub):
+        def list_comments(self, owner, name, number, limit=None):
+            from vettercode.github import GithubError
+
+            raise GithubError("comments unavailable", status=500)
+
+    fake = FlakyComments(
+        repos=["me/a"], issues={("me", "a"): [make_issue(body="please @vettercode help")]}
+    )
+    agent = FakeAgentRun()
+    result = run_once(cfg, now=INSIDE_WINDOW, client=fake, agent_run=agent)
+    assert len(result.processed) == 1
     fake = FakeGithub(repos=["me/a", "me/b"])
     result = run_once(
         cfg, now=INSIDE_WINDOW, client=fake, agent_run=FakeAgentRun(), only_repo="me/b"

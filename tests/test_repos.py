@@ -1,41 +1,44 @@
 import pytest
 
 from conftest import FakeGithub
-from vettercode.repos import autopopulate, load_repos, save_repos
+from vettercode.repos import resolve_repos
 
 
-def test_load_repos_ignores_comments_and_blanks(tmp_path):
-    path = tmp_path / "repos.txt"
-    path.write_text("# comment\n\nme/one\n  me/two  \n# another\nme/three\n")
-    assert load_repos(path) == ["me/one", "me/two", "me/three"]
+def test_resolve_repos_sorts_dedupes():
+    fake = FakeGithub(repos=["me/b", "me/a", "me/a"])
+    assert resolve_repos(fake, "me") == ["me/a", "me/b"]
 
 
-def test_load_repos_missing_file(tmp_path):
-    assert load_repos(tmp_path / "nope.txt") == []
+def test_resolve_repos_calls_client_each_time():
+    fake = FakeGithub(repos=["me/a"])
+    resolve_repos(fake, "me")
+    resolve_repos(fake, "me")
+    assert fake.calls.count(("list_repos", "me")) == 2  # always re-fetched, no cache
 
 
-def test_save_repos_sorts_dedupes(tmp_path):
-    path = tmp_path / "repos.txt"
-    save_repos(path, ["b/two", "a/one", "a/one"])
-    assert path.read_text() == "a/one\nb/two\n"
+def test_resolve_repos_passes_include_forks_through():
+    fake = FakeGithub(repos=["me/a"])
+    resolve_repos(fake, "me", include_forks=False)
+    assert fake.include_forks_calls == [False]
 
 
-def test_autopopulate_keeps_existing_list(home):
-    (home / "repos.txt").write_text("me/keep\n")
-    fake = FakeGithub(repos=["fresh/repo"])
-    result = autopopulate(fake, "me", home / "repos.txt")
-    assert result == ["me/keep"]  # existing list preserved, never re-fetched
-    assert fake.calls == []  # no API call when list exists
+def test_resolve_repos_excludes_full_name():
+    fake = FakeGithub(repos=["me/a", "me/b"])
+    assert resolve_repos(fake, "me", exclude=["me/b"]) == ["me/a"]
 
 
-def test_autopopulate_fetches_and_saves_when_empty(home):
-    fake = FakeGithub(repos=["me/b", "me/a"])
-    result = autopopulate(fake, "me", home / "repos.txt")
-    assert result == ["me/a", "me/b"]
-    assert (home / "repos.txt").read_text() == "me/a\nme/b\n"
+def test_resolve_repos_excludes_bare_name():
+    fake = FakeGithub(repos=["me/a", "me/b"])
+    assert resolve_repos(fake, "me", exclude=["b"]) == ["me/a"]
 
 
-def test_autopopulate_no_repos_raises(home):
+def test_resolve_repos_no_repos_raises():
     fake = FakeGithub(repos=[])
     with pytest.raises(RuntimeError, match="no repos"):
-        autopopulate(fake, "me", home / "repos.txt")
+        resolve_repos(fake, "me")
+
+
+def test_resolve_repos_all_excluded_raises():
+    fake = FakeGithub(repos=["me/a"])
+    with pytest.raises(RuntimeError, match="no repos"):
+        resolve_repos(fake, "me", exclude=["me/a"])

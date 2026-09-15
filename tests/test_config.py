@@ -23,7 +23,6 @@ def test_paths_derived_from_home(home):
     cfg = load_config(home)
     assert cfg.home == home
     assert cfg.log_dir == home / "logs"
-    assert cfg.repos_path == home / "repos.txt"
     assert cfg.db_path == home / "state.db"
 
 
@@ -77,6 +76,18 @@ def test_invalid_yaml_raises(home):
         load_config(home)
 
 
+def test_invalid_timezone_raises(home):
+    (home / "config.yaml").write_text("timezone: Mars/Olympus_Mons\n")
+    with pytest.raises(ConfigError, match="timezone"):
+        load_config(home)
+
+
+def test_invalid_integer_field_raises(home):
+    (home / "config.yaml").write_text("max_issues_per_night: not-a-number\n")
+    with pytest.raises(ConfigError, match="max_issues_per_night"):
+        load_config(home)
+
+
 def test_non_mapping_yaml_raises(home):
     (home / "config.yaml").write_text("- a\n- b\n")
     with pytest.raises(ConfigError, match="mapping"):
@@ -97,3 +108,24 @@ def test_home_env_override(tmp_path, monkeypatch):
     from vettercode.config import default_home
 
     assert default_home() == custom
+
+
+def test_repo_selection_defaults(home):
+    cfg = load_config(home)
+    assert cfg.include_forks is True
+    assert cfg.exclude_repos == []
+
+
+def test_repo_selection_custom_values(home):
+    (home / "config.yaml").write_text(
+        "include_forks: false\nexclude_repos:\n  - me/archived\n  - other-name\n"
+    )
+    cfg = load_config(home)
+    assert cfg.include_forks is False
+    assert cfg.exclude_repos == ["me/archived", "other-name"]
+
+
+def test_exclude_repos_must_be_list_of_strings(home):
+    (home / "config.yaml").write_text("exclude_repos: not-a-list\n")
+    with pytest.raises(ConfigError, match="exclude_repos"):
+        load_config(home)

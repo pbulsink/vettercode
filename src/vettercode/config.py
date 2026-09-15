@@ -1,7 +1,8 @@
 """Configuration loading for vettercode.
 
 All state lives under a single home directory (default ``~/.config/vettercode``):
-``config.yaml``, ``repos.txt``, ``state.db`` and ``logs/``. Override the
+``config.yaml`` and ``state.db`` (the repo list is resolved live from
+the GitHub API each run, not cached to disk). Override the
 location with the ``VETTERCODE_HOME`` environment variable (used by tests).
 """
 
@@ -28,6 +29,8 @@ DEFAULTS: dict = {
     "pr_branch_prefix": "vettercode/",
     "max_issues_per_night": 50,
     "review_cooldown_days": 7,
+    "include_forks": True,
+    "exclude_repos": [],  # owner/name or bare repo names to skip
     # Thinking budgets (LM Studio `thinking_budget` extra-body param, in tokens).
     "thinking_budget_low": 1024,    # observe / comment: simple tasks, think briefly
     "thinking_budget_high": 32768,  # pr-draft: code work, think deeply
@@ -50,6 +53,8 @@ timezone: America/Toronto
 pr_branch_prefix: "vettercode/"
 max_issues_per_night: 50
 review_cooldown_days: 7
+include_forks: true
+exclude_repos: []          # e.g. ["me/archived-repo", "some-other-repo"]
 thinking_budget_low: 1024
 thinking_budget_high: 32768
 step_limit: 60
@@ -72,7 +77,6 @@ class Config:
     # Resolved locations
     home: Path
     log_dir: Path
-    repos_path: Path
     db_path: Path
     # Settings (flat, matching config.yaml keys)
     github_username: str | None
@@ -85,6 +89,8 @@ class Config:
     pr_branch_prefix: str
     max_issues_per_night: int
     review_cooldown_days: int
+    include_forks: bool
+    exclude_repos: list[str]
     thinking_budget_low: int | None
     thinking_budget_high: int | None
     step_limit: int
@@ -148,6 +154,13 @@ def load_config(home: Path | None = None, *, seed: bool = True) -> Config:
             f"agent_mode must be one of {AGENT_MODES}, got {merged['agent_mode']!r}"
         )
 
+    if not isinstance(merged["exclude_repos"], list) or not all(
+        isinstance(item, str) for item in merged["exclude_repos"]
+    ):
+        raise ConfigError(f"exclude_repos must be a list of strings, got {merged['exclude_repos']!r}")
+
+    merged["include_forks"] = bool(merged["include_forks"])
+
     for key in (
         "max_issues_per_night",
         "review_cooldown_days",
@@ -171,6 +184,8 @@ def load_config(home: Path | None = None, *, seed: bool = True) -> Config:
         "pr_branch_prefix": merged["pr_branch_prefix"],
         "max_issues_per_night": merged["max_issues_per_night"],
         "review_cooldown_days": merged["review_cooldown_days"],
+        "include_forks": merged["include_forks"],
+        "exclude_repos": list(merged["exclude_repos"]),
         "thinking_budget_low": merged["thinking_budget_low"],
         "thinking_budget_high": merged["thinking_budget_high"],
         "step_limit": merged["step_limit"],
@@ -182,7 +197,6 @@ def load_config(home: Path | None = None, *, seed: bool = True) -> Config:
     return Config(
         home=home,
         log_dir=home / "logs",
-        repos_path=home / "repos.txt",
         db_path=home / "state.db",
         **settings,
     )

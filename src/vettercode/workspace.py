@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,21 @@ from pathlib import Path
 
 class WorkdirError(RuntimeError):
     """Clone (or setup) of the temporary workdir failed."""
+
+
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree, tolerating read-only files (git objects are
+    marked read-only on Windows, which makes plain ``shutil.rmtree`` silently
+    fail with ``ignore_errors=True`` and leave the clone behind)."""
+
+    def _on_rm_error(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_on_rm_error)
 
 
 def default_base_dir() -> Path:
@@ -100,7 +116,7 @@ class Workdir:
 
     def _cleanup(self, *, remove_only: bool) -> None:
         if self.path.exists():
-            shutil.rmtree(self.path, ignore_errors=True)
+            _rmtree(self.path)
 
 
 def sweep_stale(dir_path: Path, max_age: timedelta = timedelta(hours=24)) -> list[Path]:
@@ -120,7 +136,7 @@ def sweep_stale(dir_path: Path, max_age: timedelta = timedelta(hours=24)) -> lis
         if age > max_age:
             try:
                 if child.is_dir():
-                    shutil.rmtree(child, ignore_errors=True)
+                    _rmtree(child)
                 else:
                     child.unlink()
                 deleted.append(child)

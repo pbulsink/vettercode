@@ -73,12 +73,14 @@ class FakeGithub:
         self.fail_repos = fail_repos or set()
         self.posted: list[tuple] = []
         self.calls: list[tuple] = []
+        self.include_forks_calls: list[bool] = []
 
     def get_user_login(self) -> str:
         return self.user
 
     def list_repos(self, username: str, include_forks: bool = True) -> list[str]:
         self.calls.append(("list_repos", username))
+        self.include_forks_calls.append(include_forks)
         return self.repos
 
     def list_issues(self, owner: str, name: str, since_iso: str | None = None) -> list[dict]:

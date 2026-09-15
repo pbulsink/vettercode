@@ -102,3 +102,17 @@ def test_parse_github_time():
     assert parse_github_time("2026-01-02T03:04:05Z").tzinfo is not None
     assert parse_github_time(None) is None
     assert parse_github_time("garbage") is None
+
+
+@responses.activate
+def test_request_with_empty_body_returns_none():
+    responses.add(responses.POST, f"{API}/repos/o/n/issues/3/comments", body="", status=204)
+    out = GithubClient(token="t").post_comment("o", "n", 3, "hello")
+    assert out == {}
+
+
+def test_utc_now_iso_has_timezone():
+    from vettercode.github import GithubClient
+
+    value = GithubClient().utc_now_iso()
+    assert value.endswith("+00:00") or value.endswith("Z")

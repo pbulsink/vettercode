@@ -13,7 +13,7 @@ from .filtering import has_vettercode_mention
 from .github import GithubClient, GithubError, parse_github_time
 from .logsetup import get_logger
 from .policy import downgrade_mode, load_policy
-from .repos import autopopulate
+from .repos import resolve_repos
 from .workspace import Workdir, WorkdirError
 
 PR_URL_FALLBACK = re.compile(r"https://github\.com/[\w.\-]+/[\w.\-]+/pull/\d+")
@@ -117,12 +117,19 @@ def run_once(
     if not username:
         username = client.get_user_login()
 
-    repos = autopopulate(client, username, cfg.repos_path)
+    try:
+        repos = resolve_repos(
+            client, username, include_forks=cfg.include_forks, exclude=cfg.exclude_repos
+        )
+    except (GithubError, RuntimeError) as e:
+        log.error("failed to resolve repo list for %s: %s", username, e)
+        result.errors.append(f"repo list: {e}")
+        return result
     if only_repo:
         only = only_repo.strip()
         repos = [r for r in repos if r == only or r.endswith(f"/{only}")]
         if not repos:
-            result.errors.append(f"repo {only_repo!r} not in repo list: {cfg.repos_path}")
+            result.errors.append(f"repo {only_repo!r} not found for user {username!r}")
 
     log.info(
         "vettercode starting: user=%s repos=%d mode=%s dry_run=%s",
