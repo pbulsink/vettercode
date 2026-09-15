@@ -1,9 +1,12 @@
-"""Temporary clone workdirs: clean $TMPDIR on success, preserved on failure.
+"""Temporary clone workdirs: cleaned on success, preserved on failure.
 
-- Workdir is created under ``$TMPDIR/vettercode/`` (or an injected base).
+- Workdir is created under the OS temp directory (``$TMPDIR`` on Unix,
+  ``%TEMP%`` on Windows, both via ``tempfile.gettempdir()``), in a
+  ``vettercode/`` subdirectory, or under an injected base.
 - On clean exit the workdir is removed, so the user's directory stays clean.
-- If the body raised, the workdir is copied to
-  ``~/.cache/vettercode/failures/<repo>-<ts>/`` for debugging, then removed.
+- If the body raised, the workdir is copied to the platform cache directory
+  (``~/.cache/vettercode/failures`` on Unix, ``%LOCALAPPDATA%`` on Windows)
+  for debugging, then removed.
 """
 
 from __future__ import annotations
@@ -12,37 +15,61 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from .platforms import cache_home, supports_symlink_copy
 
 
 class WorkdirError(RuntimeError):
     """Clone (or setup) of the temporary workdir failed."""
 
 
-def _rmtree(path: Path) -> None:
-    """Remove a directory tree, tolerating read-only files (git objects are
-    marked read-only on Windows, which makes plain ``shutil.rmtree`` silently
-    fail with ``ignore_errors=True`` and leave the clone behind)."""
+def _force_writable(target) -> None:
+    """Clear the read-only bit so a delete can proceed (git marks objects
+    read-only, which blocks deletion on Windows)."""
+    try:
+        os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        pass
 
-    def _on_rm_error(func, target, exc_info):
+
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree, tolerating read-only files.
+
+    Git marks pack/object files read-only; on Windows that makes a plain
+    ``shutil.rmtree`` fail and leave the clone behind. The error handler clears
+    the bit and retries. ``onerror`` is deprecated in Python 3.12 in favour of
+    ``onexc``, so pick whichever the running interpreter wants.
+    """
+
+    def _on_rm_error(func, target, _exc):
+        _force_writable(target)
         try:
-            os.chmod(target, stat.S_IWRITE)
             func(target)
         except OSError:
             pass
 
-    shutil.rmtree(path, onerror=_on_rm_error)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_on_rm_error)
+    else:
+        shutil.rmtree(path, onerror=lambda f, t, exc_info: _on_rm_error(f, t, exc_info))
 
 
 def default_base_dir() -> Path:
-    root = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
-    return root / "vettercode"
+    """Temp root for clones.
+
+    ``tempfile.gettempdir()`` already honours ``TMPDIR``/``TEMP``/``TMP`` on the
+    respective platforms, so it is the portable single source of truth.
+    """
+    return Path(tempfile.gettempdir()) / "vettercode"
 
 
 def default_failures_dir() -> Path:
-    return Path.home() / ".cache" / "vettercode" / "failures"
+    return cache_home() / "failures"
+
 
 
 def _stamp() -> str:
@@ -93,8 +120,20 @@ class Workdir:
             cmd += ["--depth", str(self.depth)]
         cmd += [self.clone_url, str(self.path)]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+                # Never inherit stdin: it stops git blocking on a credential
+                # prompt, and on Windows the parent's stdin handle is not always
+                # inheritable (e.g. under pytest's capture).
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # OSError covers a missing git executable (FileNotFoundError) as well
+            # as Windows-specific process-spawn failures.
             self._cleanup(remove_only=True)
             raise WorkdirError(f"git clone failed for {self.clone_url}: {e}") from e
         if result.returncode != 0:
@@ -110,7 +149,9 @@ class Workdir:
         try:
             self.failures_dir.mkdir(parents=True, exist_ok=True)
             dest = self.failures_dir / self.path.name
-            shutil.copytree(self.path, dest, symlinks=True)
+            # Windows refuses symlink creation without Developer Mode/elevation,
+            # so only request symlink preservation where it is supported.
+            shutil.copytree(self.path, dest, symlinks=supports_symlink_copy())
         except Exception:  # noqa: BLE001 - preservation is best-effort
             pass
 

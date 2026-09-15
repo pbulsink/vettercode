@@ -361,6 +361,7 @@ def _find_draft_pr(workdir) -> str | None:
             text=True,
             timeout=60,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             return None

@@ -54,11 +54,14 @@ touched — the isolation boundary is the temp clone, not a container.
 
 ## Requirements
 
-- macOS (or any Unix) with **Python 3.10+**, **uv**, **git**, and the **gh** CLI
+- **macOS, Linux, or Windows** with **Python 3.10+**, **uv**, **git**, and the **gh** CLI
 - `gh auth login` completed (a token with `repo` scope)
 - **LM Studio** serving an OpenAI-compatible endpoint (default
   `http://localhost:1234/v1`) with the model loaded
   (default model id: `qwen/qwen3.8-27b`)
+- On **Windows**: a POSIX `bash` — the one bundled with
+  [Git for Windows](https://gitscm.com/download/win) is found automatically
+  (see [Windows notes](#windows-notes))
 
 ## Install
 
@@ -130,11 +133,17 @@ processing the whole list.
 
 ## Configuration
 
-Everything lives in one directory: **`~/.config/vettercode/`**
-(override location with `VETTERCODE_HOME`):
+Everything lives in one directory, which is platform-dependent:
+
+| Platform | Default location |
+|---|---|
+| macOS / Linux | `$XDG_CONFIG_HOME/vettercode`, else `~/.config/vettercode` |
+| Windows | `%APPDATA%\vettercode` |
+
+Override it with the `VETTERCODE_HOME` environment variable or `--config-home`:
 
 ```
-~/.config/vettercode/
+<vettercode home>/
 ├── config.yaml   # seeded with defaults on first run
 ├── state.db      # SQLite: last-checked timestamps, cooldowns, review history
 └── logs/         # vettercode-YYYY-MM-DD.log (30-day retention)
@@ -175,15 +184,37 @@ Exit codes: `0` ok (including out-of-window), `2` `gh` authentication failure.
 
 ## Temp directories (clean workspace guarantee)
 
-- Each repo is cloned into `$TMPDIR/vettercode/<owner>__<name>-<ts>/`
-  (shallow clone, depth 1).
-- On success the clone is **deleted**; on failure it is **copied to**
-  `~/.cache/vettercode/failures/` (24 h retention sweep available) and
-  then removed. Your working directories are never modified.
+- Each repo is cloned into `<temp>/vettercode/<owner>__<name>-<ts>/`, where
+  `<temp>` is the OS temp directory (`$TMPDIR` on Unix, `%TEMP%` on Windows)
+  — shallow clone, depth 1.
+- On success the clone is **deleted**; on failure it is **copied to** the
+  platform cache directory (`~/.cache/vettercode/failures/` on Unix,
+  `%LOCALAPPDATA%\vettercode\cache\failures\` on Windows; a 24 h retention
+  sweep is available) and then removed. Your working directories are never
+  modified.
 - Cleanup tolerates read-only files left behind by git (common on Windows);
   see `workspace._rmtree`.
 
-## Nightly automation (launchd, macOS)
+## Windows notes
+
+Vettercode runs on Windows, with three platform-specific behaviours worth
+knowing about:
+
+- **Agent commands run under bash.** mini-swe-agent executes model-issued
+  commands with `shell=True`, which is `cmd.exe` on Windows — but its
+  submission protocol and vettercode's prompts are POSIX shell. On Windows,
+  vettercode therefore wraps every agent command in `bash -lc`, using `bash`
+  from `PATH` or, failing that, the copy bundled with Git for Windows. If no
+  bash is found the issue is recorded as `Crashed` with an explanatory summary
+  rather than failing the whole run.
+- **State and cache locations** follow Windows conventions (`%APPDATA%`,
+  `%LOCALAPPDATA%`) — see [Configuration](#configuration).
+- **Symlinks are not preserved** when a failed clone is copied aside, since
+  Windows requires Developer Mode or elevation to create them.
+
+## Nightly automation
+
+### macOS (launchd)
 
 The repo ships `com.pbulsink.vettercode.plist` (runs daily at 23:00).
 Install it:
@@ -204,12 +235,24 @@ launchctl start com.pbulsink.vettercode        # trigger immediately
 The plist invokes the project venv (`<repo>/.venv/bin/vettercode`);
 after updating the code run `uv sync` so the venv is current.
 
-### Other platforms
+### Windows (Task Scheduler)
 
-There is no bundled unit/cron file for Linux or Windows yet — a `systemd`
-timer or `cron` entry calling the installed `vettercode` executable is the
-straightforward equivalent on Linux; on Windows, Task Scheduler running
-`vettercode.exe` from the venv's `Scripts/` directory works the same way.
+`scripts/install-scheduled-task.ps1` registers a daily task that runs the
+project venv's `vettercode.exe`:
+
+```powershell
+.\scripts\install-scheduled-task.ps1            # daily at 23:00
+.\scripts\install-scheduled-task.ps1 -At 02:30  # or pick a time
+
+Start-ScheduledTask -TaskName vettercode        # trigger immediately
+Unregister-ScheduledTask -TaskName vettercode -Confirm:$false
+```
+
+### Linux (systemd / cron)
+
+There is no bundled unit file yet; a `systemd` timer or `cron` entry calling
+the installed `vettercode` executable is the straightforward equivalent.
+
 `--ignore-window` is useful for manually triggered/one-off runs outside the
 configured nightly window.
 
@@ -240,12 +283,13 @@ configured nightly window.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Exit code `2` / "GitHub auth not ready" | `gh` not installed or not logged in | `gh auth login`, or `brew install gh` first |
+| Exit code `2` / "GitHub auth not ready" | `gh` not installed or not logged in | `gh auth login`; install with `brew install gh` (macOS) or `winget install --id GitHub.cli` (Windows) |
 | `RuntimeError: no repos found for ...` | Wrong `github_username`, all repos excluded, or an empty GitHub profile | Check `config.yaml`'s `github_username`/`exclude_repos`; confirm `gh api /user` returns the expected account |
 | Agent outcome `exit_status="Crashed"` | LM Studio not running, wrong `lmstudio_base_url`/`lmstudio_model`, or a model error | Confirm LM Studio is serving the configured model at the configured URL; check `~/.config/vettercode/logs/` |
 | Issue never gets picked up | No `@vettercode` mention detected, or it's within `review_cooldown_days` of a prior review | Confirm the mention text and casing match `@vettercode`; check `state.db`'s `issues` table for `last_reviewed_at` |
 | Draft PR never appears after a `pr-draft` run | Model decided not to open one (see its summary in `reviews.summary`), or `AGENTS.md` downgraded the mode | Check the run's log line (`mode ... downgraded to ...`) and the recorded review summary |
 | Nightly run silently does nothing | Outside the configured `start_time`/`stop_time` window | Use `--ignore-window` to confirm the rest of the pipeline works, then check `timezone`/window config |
+| Windows: every issue ends `Crashed` with a bash message | No POSIX `bash` on the machine | Install [Git for Windows](https://git-scm.com/download/win), or put a `bash` on `PATH` |
 
 ## Development
 

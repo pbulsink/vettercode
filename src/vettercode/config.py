@@ -1,9 +1,11 @@
 """Configuration loading for vettercode.
 
-All state lives under a single home directory (default ``~/.config/vettercode``):
-``config.yaml`` and ``state.db`` (the repo list is resolved live from
-the GitHub API each run, not cached to disk). Override the
-location with the ``VETTERCODE_HOME`` environment variable (used by tests).
+All state lives under a single home directory holding ``config.yaml`` and
+``state.db`` (the repo list is resolved live from the GitHub API each run, not
+cached to disk). The default location is platform-dependent —
+``~/.config/vettercode`` on macOS/Linux and ``%APPDATA%\\vettercode`` on
+Windows (see :mod:`vettercode.platforms`). Override it with the
+``VETTERCODE_HOME`` environment variable (used by tests).
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
+
+from .platforms import config_home
 
 AGENT_MODES = ("observe", "comment", "pr-draft")
 
@@ -69,7 +73,10 @@ class ConfigError(ValueError):
 
 
 def default_home() -> Path:
-    return Path(os.environ.get("VETTERCODE_HOME") or "~/.config/vettercode").expanduser()
+    override_path = os.environ.get("VETTERCODE_HOME")
+    if override_path:
+        return Path(override_path).expanduser()
+    return config_home()
 
 
 @dataclass(frozen=True)

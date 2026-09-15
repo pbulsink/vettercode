@@ -23,7 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--config-home",
         default=None,
-        help="override the config/state directory (default: $VETTERCODE_HOME or ~/.config/vettercode)",
+        help=(
+            "override the config/state directory (default: $VETTERCODE_HOME, else "
+            "~/.config/vettercode on macOS/Linux or %%APPDATA%%\\vettercode on Windows)"
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -44,8 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode:
         cfg = override(cfg, agent_mode=args.mode)
 
-    setup_logging(cfg.log_dir, verbose=args.verbose)
-    purge_old_logs(cfg.log_dir)
+    setup_logging(cfg.log_dir, verbose=args.verbose, tz=cfg.timezone)
+    purge_old_logs(cfg.log_dir, tz=cfg.timezone)
     log = get_logger()
 
     try:

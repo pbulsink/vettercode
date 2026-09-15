@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .platforms import IS_WINDOWS, find_bash
+
 # Silence mini-swe-agent's startup banner before it is imported.
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
@@ -26,6 +28,8 @@ PR_URL_PATTERN = re.compile(r"https://github\.com/[\w.\-]+/[\w.\-]+/pull/\d+")
 # marker; every line after it becomes the submission text (mini-swe-agent v2
 # LocalEnvironment._check_finished contract).
 SUBMIT_HINT = (
+    "- All commands you emit are executed with POSIX `bash`, on every platform. Use POSIX "
+    "shell syntax only (never PowerShell or cmd.exe syntax), and use forward slashes in paths.\n"
     "- To finish, run exactly one command block of this shape (the lines after the marker "
     "become your final submission):\n"
     "      cat <<'VETTERCODE_EOF'\n"
@@ -53,8 +57,9 @@ SYSTEM_TEMPLATES: dict[str, str] = {
         "- Investigate the issue by reading the codebase (read-only commands are always allowed).\n"
         "- You may NOT create, edit or delete repository files, and may NOT commit or push code.\n"
         "- When done, leave exactly ONE informative comment on the issue using the `gh` CLI:\n"
-        "    gh issue comment <NUMBER> --repo <OWNER/NAME> --body-file /tmp/vettercode-comment.md\n"
-        "  (write the comment text to that file first with a here-doc). The comment must be useful:\n"
+        "    gh issue comment <NUMBER> --repo <OWNER/NAME> --body-file vettercode-comment.md\n"
+        "  (write the comment text to that file in the current directory first with a here-doc).\n"
+        "  The comment must be useful:\n"
         "  findings, likely root cause, suggested fix direction. Start it with '🤖 vettercode findings:'.\n"
         "- NEVER open a PR in this mode. NEVER merge anything.\n"
         + SUBMIT_HINT
@@ -168,10 +173,54 @@ def _select_budget(budget_low: int | None, budget_high: int | None, mode: str) -
     return budget_low
 
 
+class BashUnavailableError(RuntimeError):
+    """No POSIX bash is available to run agent commands on this machine."""
+
+
+def _wrap_for_bash(command: str, bash: str) -> str:
+    """Wrap a POSIX shell command so ``shell=True`` on Windows still runs bash.
+
+    mini-swe-agent executes model commands via ``subprocess.Popen(shell=True)``,
+    which is ``cmd.exe`` on Windows. Our prompts (and mini-swe-agent's own
+    heredoc submission protocol) are POSIX shell, so the command is handed to
+    ``bash -lc`` instead. The command is embedded as a double-quoted cmd.exe
+    argument, so only ``"`` and ``%`` need escaping.
+    """
+    escaped = command.replace('"', '\\"').replace("%", "%%")
+    return f'"{bash}" -lc "{escaped}"'
+
+
+def make_environment(workdir: Path, env: dict[str, str], timeout: int):
+    """Build the mini-swe-agent environment for this platform.
+
+    On Unix ``LocalEnvironment`` is used directly. On Windows it is subclassed
+    so every command is routed through a POSIX bash (Git for Windows ships one),
+    keeping a single set of shell-agnostic agent prompts.
+    """
+    from minisweagent.environments.local import LocalEnvironment
+
+    if not IS_WINDOWS:
+        return LocalEnvironment(cwd=str(workdir), env=env, timeout=timeout)
+
+    bash = find_bash()
+    if bash is None:
+        raise BashUnavailableError(
+            "vettercode needs a POSIX bash to run agent commands on Windows. "
+            "Install Git for Windows (which bundles bash) or put bash on PATH."
+        )
+
+    class _BashEnvironment(LocalEnvironment):
+        def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None):
+            wrapped = dict(action)
+            wrapped["command"] = _wrap_for_bash(action.get("command", ""), bash)
+            return super().execute(wrapped, cwd, timeout=timeout)
+
+    return _BashEnvironment(cwd=str(workdir), env=env, timeout=timeout)
+
+
 def make_agent(cfg, workdir: Path, mode: str, token: str | None):
     """Build a configured mini-swe-agent DefaultAgent. Kept separate for testability."""
     from minisweagent.agents.default import DefaultAgent
-    from minisweagent.environments.local import LocalEnvironment
     from minisweagent.models.litellm_model import LitellmModel
 
     model = LitellmModel(
@@ -182,10 +231,10 @@ def make_agent(cfg, workdir: Path, mode: str, token: str | None):
         ),
         cost_tracking="ignore_errors",
     )
-    env = LocalEnvironment(
-        cwd=str(workdir),
-        env={"GH_TOKEN": token or "", "GIT_TERMINAL_PROMPT": "0"},
-        timeout=cfg.command_timeout_seconds,
+    env = make_environment(
+        workdir,
+        {"GH_TOKEN": token or "", "GIT_TERMINAL_PROMPT": "0"},
+        cfg.command_timeout_seconds,
     )
     return DefaultAgent(
         model=model,
@@ -221,7 +270,11 @@ def run_agent(
     from .logsetup import get_logger
 
     log = get_logger()
-    agent = make_agent(cfg, workdir, mode, token)
+    try:
+        agent = make_agent(cfg, workdir, mode, token)
+    except BashUnavailableError as e:
+        log.error("cannot start agent: %s", e)
+        return AgentOutcome(exit_status="Crashed", summary=str(e), pr_url=None, cost=0.0, n_steps=0)
     extra = {"task": task, "branch_prefix": branch_prefix.rstrip("/")}
     try:
         result = agent.run(**extra)

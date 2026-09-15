@@ -9,6 +9,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 
+from .platforms import gh_install_hint
+
 
 class AuthError(RuntimeError):
     """Raised when gh is missing or not authenticated."""
@@ -25,6 +27,7 @@ def _run_gh(args: list[str]) -> subprocess.CompletedProcess:
         text=True,
         timeout=30,
         check=False,
+        stdin=subprocess.DEVNULL,  # never let gh block on an interactive prompt
     )
 
 
@@ -45,9 +48,7 @@ def get_token() -> str:
     """Return the active gh token, or raise AuthError with setup guidance."""
     ok, message = auth_status()
     if not ok:
-        hint = "Run: gh auth login" if "not installed" not in message else (
-            "Install gh: brew install gh, then run: gh auth login"
-        )
+        hint = "Run: gh auth login" if "not installed" not in message else gh_install_hint()
         raise AuthError(f"GitHub auth not ready: {message}", hint=hint)
     result = _run_gh(["auth", "token"])
     if result.returncode != 0:

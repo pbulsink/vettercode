@@ -108,10 +108,6 @@ def test_make_agent_wiring(cfg, tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             captured.setdefault("model", []).append(kwargs)
 
-    class FakeEnv:
-        def __init__(self, **kwargs):
-            captured.setdefault("env", []).append(kwargs)
-
     class FakeAgent:
         def __init__(self, model, env, **kwargs):
             captured.setdefault("agent", []).append(kwargs)
@@ -119,12 +115,18 @@ def test_make_agent_wiring(cfg, tmp_path, monkeypatch):
             self.cost = 0.0
 
     import minisweagent.agents.default as agents_mod
-    import minisweagent.environments.local as env_mod
     import minisweagent.models.litellm_model as model_mod
 
     monkeypatch.setattr(model_mod, "LitellmModel", FakeModel)
-    monkeypatch.setattr(env_mod, "LocalEnvironment", FakeEnv)
     monkeypatch.setattr(agents_mod, "DefaultAgent", FakeAgent)
+
+    def fake_env(workdir, env, timeout):
+        captured.setdefault("env", []).append(
+            {"cwd": str(workdir), "env": env, "timeout": timeout}
+        )
+        return object()
+
+    monkeypatch.setattr(agent_mod, "make_environment", fake_env)
 
     workdir = tmp_path / "wd"
     make_agent(cfg, workdir, "pr-draft", "sekrit")
@@ -135,10 +137,77 @@ def test_make_agent_wiring(cfg, tmp_path, monkeypatch):
     assert captured["model"][1]["model_kwargs"]["thinking_budget"] == cfg.thinking_budget_low
     assert captured["env"][0]["cwd"] == str(workdir)
     assert captured["env"][0]["env"]["GH_TOKEN"] == "sekrit"
+    assert captured["env"][0]["timeout"] == cfg.command_timeout_seconds
     assert captured["env"][1]["env"]["GH_TOKEN"] == ""
     assert captured["agent"][0]["step_limit"] == cfg.step_limit
     assert captured["agent"][0]["cost_limit"] == 0
     assert captured["agent"][0]["wall_time_limit_seconds"] == cfg.wall_time_limit_seconds
+
+
+def test_make_environment_unix_uses_local_environment(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_mod, "IS_WINDOWS", False)
+    from minisweagent.environments.local import LocalEnvironment
+
+    env = agent_mod.make_environment(tmp_path, {"GH_TOKEN": "t"}, 30)
+    assert type(env) is LocalEnvironment
+    assert env.config.cwd == str(tmp_path)
+
+
+def test_make_environment_windows_wraps_commands_in_bash(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_mod, "IS_WINDOWS", True)
+    monkeypatch.setattr(agent_mod, "find_bash", lambda: r"C:\Git\bin\bash.exe")
+
+    env = agent_mod.make_environment(tmp_path, {"GH_TOKEN": "t"}, 30)
+
+    seen: dict = {}
+
+    def fake_execute(self, action, cwd="", *, timeout=None):
+        seen["command"] = action["command"]
+        return {"output": "", "returncode": 0}
+
+    from minisweagent.environments.local import LocalEnvironment
+
+    monkeypatch.setattr(LocalEnvironment, "execute", fake_execute)
+    env.execute({"command": "git status"})
+
+    assert seen["command"] == '"C:\\Git\\bin\\bash.exe" -lc "git status"'
+
+
+def test_make_environment_windows_without_bash_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_mod, "IS_WINDOWS", True)
+    monkeypatch.setattr(agent_mod, "find_bash", lambda: None)
+    with pytest.raises(agent_mod.BashUnavailableError, match="Git for Windows"):
+        agent_mod.make_environment(tmp_path, {}, 30)
+
+
+def test_run_agent_without_bash_is_captured_not_raised(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_mod, "IS_WINDOWS", True)
+    monkeypatch.setattr(agent_mod, "find_bash", lambda: None)
+    outcome = agent_mod.run_agent("task", cfg, tmp_path, "observe", None)
+    assert outcome.exit_status == "Crashed"
+    assert "bash" in outcome.summary
+    assert outcome.n_steps == 0
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ls", '"bash" -lc "ls"'),
+        ('echo "hi"', '"bash" -lc "echo \\"hi\\""'),
+        ("echo 100%", '"bash" -lc "echo 100%%"'),
+    ],
+)
+def test_wrap_for_bash_escaping(command, expected):
+    assert agent_mod._wrap_for_bash(command, "bash") == expected
+
+
+def test_submit_hint_requires_posix_syntax():
+    assert "POSIX" in agent_mod.SUBMIT_HINT
+
+
+def test_comment_template_uses_relative_body_file():
+    assert "/tmp/" not in SYSTEM_TEMPLATES["comment"]
+    assert "--body-file vettercode-comment.md" in SYSTEM_TEMPLATES["comment"]
 
 
 class _FakeAgent:
